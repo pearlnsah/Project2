@@ -7,139 +7,170 @@ import json
 import jwt
 import datetime
 import sqlite3
+import os
 
 hostName = "localhost"
 serverPort = 8080
 
-# Function to initialize the SQLite database
-def init_db():
-    conn = sqlite3.connect('totally_not_my_privateKeys.db')
-    c = conn.cursor()
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS keys (
-        kid INTEGER PRIMARY KEY AUTOINCREMENT,
-        key BLOB NOT NULL,
-        exp INTEGER NOT NULL
-    )
-    ''')
-    conn.commit()
-    conn.close()
+# Define the SQLite database file name
+db_name = 'keys.db'
+#table_name = 'keys_data'
 
-# Function to save a key into the SQLite database
-def save_key(pem, exp):
-    conn = sqlite3.connect('totally_not_my_privateKeys.db')
-    c = conn.cursor()
-    c.execute('INSERT INTO keys (key, exp) VALUES (?, ?)', (pem, exp))
-    conn.commit()
-    conn.close()
+private_key = rsa.generate_private_key(
+    public_exponent=65537,
+    key_size=2048,
+)
+expired_key = rsa.generate_private_key(
+    public_exponent=65537,
+    key_size=2048,
+)
 
-# Generate RSA keys
-def generate_rsa_keys():
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    expired_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+pem = private_key.private_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PrivateFormat.TraditionalOpenSSL,
+    encryption_algorithm=serialization.NoEncryption()
+)
+expired_pem = expired_key.private_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PrivateFormat.TraditionalOpenSSL,
+    encryption_algorithm=serialization.NoEncryption()
+)
 
-    pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.TraditionalOpenSSL,
-        encryption_algorithm=serialization.NoEncryption()
-    )
-    expired_pem = expired_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.TraditionalOpenSSL,
-        encryption_algorithm=serialization.NoEncryption()
-    )
+numbers = private_key.private_numbers()
 
-    now = int(datetime.datetime.now().timestamp())
-    # Save keys with expiration times
-    save_key(pem, now + 3600)  # Valid for 1 hour
-    save_key(expired_pem, now - 3600)  # Expired 1 hour ago
 
-# Utility function to convert integers to Base64URL
 def int_to_base64(value):
+    """Convert an integer to a Base64URL-encoded string"""
     value_hex = format(value, 'x')
+    # Ensure even length
     if len(value_hex) % 2 == 1:
         value_hex = '0' + value_hex
     value_bytes = bytes.fromhex(value_hex)
     encoded = base64.urlsafe_b64encode(value_bytes).rstrip(b'=')
     return encoded.decode('utf-8')
 
+
 class MyServer(BaseHTTPRequestHandler):
+    def do_PUT(self):
+        self.send_response(405)
+        self.end_headers()
+        return
+
+    def do_PATCH(self):
+        self.send_response(405)
+        self.end_headers()
+        return
+
+    def do_DELETE(self):
+        self.send_response(405)
+        self.end_headers()
+        return
+
+    def do_HEAD(self):
+        self.send_response(405)
+        self.end_headers()
+        return
+
     def do_POST(self):
         parsed_path = urlparse(self.path)
         params = parse_qs(parsed_path.query)
         if parsed_path.path == "/auth":
-            conn = sqlite3.connect('totally_not_my_privateKeys.db')
-            c = conn.cursor()
-            now = int(datetime.datetime.now().timestamp())
+            headers = {
+                "kid": "goodKID"
+            }
+            token_payload = {
+                "user": "username",
+                "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+            }
             if 'expired' in params:
-                c.execute('SELECT key FROM keys WHERE exp <= ? ORDER BY exp DESC LIMIT 1', (now,))
-            else:
-                c.execute('SELECT key FROM keys WHERE exp > ? ORDER BY exp ASC LIMIT 1', (now,))
-            key_row = c.fetchone()
-            conn.close()
-
-            if key_row:
-                key_pem = key_row[0]
-                headers = {"kid": "expiredKID" if 'expired' in params else "goodKID"}
-                token_payload = {
-                    "user": "username",
-                    "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=-1 if 'expired' in params else 1)
-                }
-                encoded_jwt = jwt.encode(token_payload, key_pem, algorithm="RS256", headers=headers)
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(bytes(encoded_jwt, "utf-8"))
-            else:
-                self.send_response(404, "Key not found")
-                self.end_headers()
+                headers["kid"] = "expiredKID"
+                token_payload["exp"] = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+            encoded_jwt = jwt.encode(token_payload, pem, algorithm="RS256", headers=headers)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(bytes(encoded_jwt, "utf-8"))
             return
 
         self.send_response(405)
         self.end_headers()
+        return
 
+    
+
+    # Function to create SQLite database and table
+    def create_database_table(self):
+        conn = sqlite3.connect(db_name)
+        cursor = conn.cursor()
+        #alg VARCHAR(5) PRIMARY KEY,
+        cursor.execute('''CREATE TABLE IF NOT EXISTS keys (
+                       id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                       alg VARCHAR(5),
+                        kty TEXT,
+                        use TEXT,
+                        kid TEXT,
+                        n TEXT)''')
+
+        conn.commit()
+        conn.close()
+        
+    # Function to insert data into SQLite table
+    def insert_data_to_table(self, keys_data):
+        conn = sqlite3.connect(db_name)
+        cursor = conn.cursor()
+        for key in keys_data:
+            cursor.execute("INSERT INTO keys (alg, kty, use, kid, n) VALUES (?, ?, ?, ?, ?)",
+                       (key['alg'], key['kty'], key['use'], key['kid'], key['n']))
+
+        print("Data inserted successfully.")
+        conn.commit()
+        conn.close()
+
+
+#API end_point
     def do_GET(self):
         if self.path == "/.well-known/jwks.json":
-            conn = sqlite3.connect('totally_not_my_privateKeys.db')
-            c = conn.cursor()
-            now = int(datetime.datetime.now().timestamp())
-            c.execute('SELECT key, kid FROM keys WHERE exp > ?', (now,))
-            keys_info = c.fetchall()
-            conn.close()
-
-            jwks = {"keys": []}
-            for key_pem, kid in keys_info:
-                private_key = serialization.load_pem_private_key(key_pem, password=None)
-                numbers = private_key.private_numbers()
-                jwks["keys"].append({
-                    "alg": "RS256",
-                    "kty": "RSA",
-                    "use": "sig",
-                    "kid": str(kid),
-                    "n": int_to_base64(numbers.public_numbers.n),
-                    "e": int_to_base64(numbers.public_numbers.e),
-                })
-
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
-            self.wfile.write(bytes(json.dumps(jwks), "utf-8"))
+            keys = {
+                "keys": [
+                    {
+                        "alg": "RS256",
+                        "kty": "RSA",
+                        "use": "sig",
+                        "kid": "goodKID",
+                        "n": int_to_base64(numbers.public_numbers.n),
+                        "e": int_to_base64(numbers.public_numbers.e),
+                    }
+                ]
+            }
+            self.wfile.write(bytes(json.dumps(keys), "utf-8"))
+
+            # Extracting keys data from JSON
+            keys_data = keys.get('keys', [])
+            
+            # Create SQLite database and table
+            # Check if the database file exists
+            if not os.path.exists(db_name):
+                self.create_database_table()
+
+            # Insert data into SQLite table    
+            self.insert_data_to_table(keys_data)
+
+
+
             return
 
         self.send_response(405)
         self.end_headers()
+        return
 
-# Main setup and server start
+
 if __name__ == "__main__":
-    init_db()  # Initialize the database and create the table
-    generate_rsa_keys()  # Generate and save RSA keys
-
     webServer = HTTPServer((hostName, serverPort), MyServer)
-    print(f"Server started http://{hostName}:{serverPort}")
-
     try:
         webServer.serve_forever()
     except KeyboardInterrupt:
         pass
-    finally:
-        webServer.server_close()
-        print("Server stopped.")
+
+    webServer.server_close()
